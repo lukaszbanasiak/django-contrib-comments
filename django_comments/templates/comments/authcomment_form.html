@@ -1,0 +1,6 @@
+{% load i18n %}
+{% if user.is_authenticated %}
+    {% include "comments/form.html" %}
+{% else %}
+    <p>{% trans "Please log in to leave a comment." %}</p>
+{% endif %}

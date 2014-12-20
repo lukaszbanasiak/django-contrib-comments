@@ -157,6 +157,21 @@ class BaseCommentForm(CommentSecurityForm):
                          for i in bad_words], ugettext('and')))
         return comment
 
+    def get_template_names(self, ctype, suffix='form'):
+        """
+        Return a list of template names to be used for the request. Must return
+        a list.
+        """
+        comment_model = self.get_comment_model()
+        template_search_list = [
+            "comments/%s/%s/%s_%s.html" % (ctype.app_label, ctype.model, comment_model._meta.model_name, suffix),
+            "comments/%s/%s/%s.html" % (ctype.app_label, ctype.model, suffix),
+            "comments/%s/%s_%s.html" % (ctype.app_label, comment_model._meta.model_name, suffix),
+            "comments/%s/%s.html" % (ctype.app_label, suffix),
+            "comments/%s_%s.html" % (comment_model._meta.model_name, suffix),
+            "comments/%s.html" % suffix
+        ]
+        return template_search_list
 
 class HoneypotMixin(object):
     honeypot      = forms.CharField(required=False,

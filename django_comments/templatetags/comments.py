@@ -166,11 +166,7 @@ class RenderCommentFormNode(CommentFormNode):
     def render(self, context):
         ctype, object_pk = self.get_target_ctype_pk(context)
         if object_pk:
-            template_search_list = [
-                "comments/%s/%s/form.html" % (ctype.app_label, ctype.model),
-                "comments/%s/form.html" % ctype.app_label,
-                "comments/form.html"
-            ]
+            template_search_list = self.get_form(context).get_template_names(ctype)
             context.push()
             formstr = render_to_string(template_search_list, {"form" : self.get_form(context)}, context)
             context.pop()
