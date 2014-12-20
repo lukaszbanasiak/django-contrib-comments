@@ -9,7 +9,8 @@ from django.utils.text import get_text_list
 from django.utils import timezone
 from django.utils.translation import ungettext, ugettext, ugettext_lazy as _
 
-from django_comments.models import Comment
+import django_comments
+from django_comments.models import LegacyComment, AuthComment, NonAuthComment
 
 COMMENT_MAX_LENGTH = getattr(settings,'COMMENT_MAX_LENGTH', 3000)
 
@@ -90,13 +91,10 @@ class CommentSecurityForm(forms.Form):
         value = "-".join(info)
         return salted_hmac(key_salt, value).hexdigest()
 
-class CommentDetailsForm(CommentSecurityForm):
+class BaseCommentForm(CommentSecurityForm):
     """
-    Handles the specific details of the comment (name, comment, etc.).
+    Base class for Comment forms
     """
-    name          = forms.CharField(label=_("Name"), max_length=50)
-    email         = forms.EmailField(label=_("Email address"))
-    url           = forms.URLField(label=_("URL"), required=False)
     comment       = forms.CharField(label=_('Comment'), widget=forms.Textarea,
                                     max_length=COMMENT_MAX_LENGTH)
 
@@ -124,7 +122,7 @@ class CommentDetailsForm(CommentSecurityForm):
         comment apps should override this, get_comment_create_data, and perhaps
         check_for_duplicate_comment to provide custom comment models.
         """
-        return Comment
+        raise NotImplementedError
 
     def get_comment_create_data(self):
         """
@@ -135,15 +133,67 @@ class CommentDetailsForm(CommentSecurityForm):
         return dict(
             content_type = ContentType.objects.get_for_model(self.target_object),
             object_pk    = force_text(self.target_object._get_pk_val()),
-            user_name    = self.cleaned_data["name"],
-            user_email   = self.cleaned_data["email"],
-            user_url     = self.cleaned_data["url"],
             comment      = self.cleaned_data["comment"],
             submit_date  = timezone.now(),
             site_id      = settings.SITE_ID,
             is_public    = True,
             is_removed   = False,
         )
+
+    def clean_comment(self):
+        """
+        If COMMENTS_ALLOW_PROFANITIES is False, check that the comment doesn't
+        contain anything in PROFANITIES_LIST.
+        """
+        comment = self.cleaned_data["comment"]
+        if settings.COMMENTS_ALLOW_PROFANITIES == False:
+            bad_words = [w for w in settings.PROFANITIES_LIST if w in comment.lower()]
+            if bad_words:
+                raise forms.ValidationError(ungettext(
+                    "Watch your mouth! The word %s is not allowed here.",
+                    "Watch your mouth! The words %s are not allowed here.",
+                    len(bad_words)) % get_text_list(
+                        ['"%s%s%s"' % (i[0], '-'*(len(i)-2), i[-1])
+                         for i in bad_words], ugettext('and')))
+        return comment
+
+
+class HoneypotMixin(object):
+    honeypot      = forms.CharField(required=False,
+                                    label=_('If you enter anything in this field '\
+                                            'your comment will be treated as spam'))
+
+    def clean_honeypot(self):
+        """Check that nothing's been entered into the honeypot."""
+        value = self.cleaned_data["honeypot"]
+        if value:
+            raise forms.ValidationError(self.fields["honeypot"].label)
+        return value
+
+class NonAuthCommentForm(HoneypotMixin, BaseCommentForm):
+    """
+    Handles the specific details of the comment (name, email, etc.).
+    """
+    name          = forms.CharField(label=_("Name"), max_length=50)
+    email         = forms.EmailField(label=_("Email address"))
+    url           = forms.URLField(label=_("URL"), required=False)
+
+    def get_comment_model(self):
+        """
+        Get the comment model to create with this form. Subclasses in custom
+        comment apps should override this, get_comment_create_data, and perhaps
+        check_for_duplicate_comment to provide custom comment models.
+        """
+        return NonAuthComment
+
+    def get_comment_create_data(self):
+        data = super(NonAuthCommentForm, self).get_comment_create_data()
+        data.update(
+            user_name    = self.cleaned_data["name"],
+            user_email   = self.cleaned_data["email"],
+            user_url     = self.cleaned_data["url"],
+        )
+        return data
 
     def check_for_duplicate_comment(self, new):
         """
@@ -165,31 +215,49 @@ class CommentDetailsForm(CommentSecurityForm):
 
         return new
 
-    def clean_comment(self):
-        """
-        If COMMENTS_ALLOW_PROFANITIES is False, check that the comment doesn't
-        contain anything in PROFANITIES_LIST.
-        """
-        comment = self.cleaned_data["comment"]
-        if settings.COMMENTS_ALLOW_PROFANITIES == False:
-            bad_words = [w for w in settings.PROFANITIES_LIST if w in comment.lower()]
-            if bad_words:
-                raise forms.ValidationError(ungettext(
-                    "Watch your mouth! The word %s is not allowed here.",
-                    "Watch your mouth! The words %s are not allowed here.",
-                    len(bad_words)) % get_text_list(
-                        ['"%s%s%s"' % (i[0], '-'*(len(i)-2), i[-1])
-                         for i in bad_words], ugettext('and')))
-        return comment
+class AuthCommentForm(HoneypotMixin, BaseCommentForm):
+    """
+    Handles the specific details of the comment (name, email, etc.).
+    """
 
-class CommentForm(CommentDetailsForm):
-    honeypot      = forms.CharField(required=False,
-                                    label=_('If you enter anything in this field '\
-                                            'your comment will be treated as spam'))
+    def get_comment_model(self):
+        """
+        Get the comment model to create with this form. Subclasses in custom
+        comment apps should override this, get_comment_create_data, and perhaps
+        check_for_duplicate_comment to provide custom comment models.
+        """
+        return AuthComment
 
-    def clean_honeypot(self):
-        """Check that nothing's been entered into the honeypot."""
-        value = self.cleaned_data["honeypot"]
-        if value:
-            raise forms.ValidationError(self.fields["honeypot"].label)
-        return value
+    def check_for_duplicate_comment(self, new):
+        """
+        Check that a submitted comment isn't a duplicate. This might be caused
+        by someone posting a comment twice. If it is a dup, silently return the *previous* comment.
+        """
+        possible_duplicates = self.get_comment_model()._default_manager.using(
+            self.target_object._state.db
+        ).filter(
+            content_type = new.content_type,
+            object_pk = new.object_pk,
+            user = new.user,
+        )
+        for old in possible_duplicates:
+            if old.submit_date.date() == new.submit_date.date() and old.comment == new.comment:
+                return old
+
+        return new
+
+class LegacyCommentForm(NonAuthComment):
+    """
+    Handles the specific details of the comment (name, email, etc.).
+    """
+
+    def get_comment_model(self):
+        """
+        Get the comment model to create with this form. Subclasses in custom
+        comment apps should override this, get_comment_create_data, and perhaps
+        check_for_duplicate_comment to provide custom comment models.
+        """
+        return LegacyComment
+
+# Comment form for backward capability
+CommentForm = django_comments.get_form()
