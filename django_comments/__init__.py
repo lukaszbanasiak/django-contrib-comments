@@ -2,11 +2,39 @@ from django.conf import settings
 from django.core import urlresolvers
 from django.core.exceptions import ImproperlyConfigured
 from django.utils.importlib import import_module
+try:
+    from django.utils.module_loading import import_string  # Django >= 1.7
+except ImportError:
+    try:
+        from django.utils.module_loading import import_by_path as import_string  # Django == 1.6
+    except ImportError:
+        # Django <= 1.5
+        import sys
+        from django.utils import six
 
-from django_comments.models import Comment
-from django_comments.forms import CommentForm
+        def import_string(dotted_path):
+            """
+            Import a dotted module path and return the attribute/class designated by the
+            last name in the path. Raise ImportError if the import failed.
+            """
+            try:
+                module_path, class_name = dotted_path.rsplit('.', 1)
+            except ValueError:
+                msg = "%s doesn't look like a module path" % dotted_path
+                six.reraise(ImportError, ImportError(msg), sys.exc_info()[2])
+
+            module = import_module(module_path)
+
+            try:
+                return getattr(module, class_name)
+            except AttributeError:
+                msg = 'Module "%s" does not define a "%s" attribute/class' % (
+                    dotted_path, class_name)
+                six.reraise(ImportError, ImportError(msg), sys.exc_info()[2])
 
 DEFAULT_COMMENTS_APP = 'django_comments'
+DEFAULT_COMMENTS_MODEL = getattr(settings, 'COMMENTS_MODEL', 'django_comments.models.LegacyComment')
+DEFAULT_COMMENTS_FORM = getattr(settings, 'COMMENTS_FORM', 'django_comments.forms.LegacyCommentForm')
 
 def get_comment_app():
     """
@@ -41,7 +69,9 @@ def get_model():
     if get_comment_app_name() != DEFAULT_COMMENTS_APP and hasattr(get_comment_app(), "get_model"):
         return get_comment_app().get_model()
     else:
-        return Comment
+        comment_model = import_string(DEFAULT_COMMENTS_MODEL)
+        comment_model._meta.managed = True
+        return comment_model
 
 def get_form():
     """
@@ -50,7 +80,7 @@ def get_form():
     if get_comment_app_name() != DEFAULT_COMMENTS_APP and hasattr(get_comment_app(), "get_form"):
         return get_comment_app().get_form()
     else:
-        return CommentForm
+        return import_string(DEFAULT_COMMENTS_FORM)
 
 def get_form_target():
     """
