@@ -261,10 +261,13 @@ class AuthCommentForm(HoneypotMixin, BaseCommentForm):
 
         return new
 
-class LegacyCommentForm(NonAuthComment):
+class LegacyCommentForm(HoneypotMixin, BaseCommentForm):
     """
     Handles the specific details of the comment (name, email, etc.).
     """
+    name          = forms.CharField(label=_("Name"), max_length=50)
+    email         = forms.EmailField(label=_("Email address"))
+    url           = forms.URLField(label=_("URL"), required=False)
 
     def get_comment_model(self):
         """
@@ -273,6 +276,35 @@ class LegacyCommentForm(NonAuthComment):
         check_for_duplicate_comment to provide custom comment models.
         """
         return LegacyComment
+
+    def get_comment_create_data(self):
+        data = super(LegacyCommentForm, self).get_comment_create_data()
+        data.update(
+            user_name    = self.cleaned_data["name"],
+            user_email   = self.cleaned_data["email"],
+            user_url     = self.cleaned_data["url"],
+        )
+        return data
+
+    def check_for_duplicate_comment(self, new):
+        """
+        Check that a submitted comment isn't a duplicate. This might be caused
+        by someone posting a comment twice. If it is a dup, silently return the *previous* comment.
+        """
+        possible_duplicates = self.get_comment_model()._default_manager.using(
+            self.target_object._state.db
+        ).filter(
+            content_type = new.content_type,
+            object_pk = new.object_pk,
+            user_name = new.user_name,
+            user_email = new.user_email,
+            user_url = new.user_url,
+        )
+        for old in possible_duplicates:
+            if old.submit_date.date() == new.submit_date.date() and old.comment == new.comment:
+                return old
+
+        return new
 
 # Comment form for backward capability
 CommentForm = django_comments.get_form()
