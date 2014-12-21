@@ -35,6 +35,7 @@ except ImportError:
 DEFAULT_COMMENTS_APP = 'django_comments'
 DEFAULT_COMMENTS_MODEL = getattr(settings, 'COMMENTS_MODEL', 'django_comments.models.LegacyComment')
 DEFAULT_COMMENTS_FORM = getattr(settings, 'COMMENTS_FORM', 'django_comments.forms.LegacyCommentForm')
+DEFAULT_COMMENTS_ADMIN = getattr(settings, 'COMMENTS_ADMIN', 'django_comments.admin.LegacyCommentAdmin')
 
 def get_comment_app():
     """
@@ -120,3 +121,12 @@ def get_approve_url(comment):
     else:
         return urlresolvers.reverse("django_comments.views.moderation.approve",
                                     args=(comment.id,))
+
+def get_admin():
+    """
+    Returns the comment ModelAdmin class.
+    """
+    if get_comment_app_name() != DEFAULT_COMMENTS_APP and hasattr(get_comment_app(), "get_admin"):
+        return get_comment_app().get_admin()
+    else:
+        return import_string(DEFAULT_COMMENTS_ADMIN)
